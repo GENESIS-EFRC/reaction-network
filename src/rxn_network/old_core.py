@@ -18,15 +18,15 @@ from pymatgen.entries.entry_tools import EntrySet
 from scipy.special import comb
 from tqdm import tqdm
 
-from rxn_network.analysis import PathwayAnalysis
+from rxn_network.old_analysis import PathwayAnalysis
 from rxn_network.entries import GibbsComputedStructureEntry, PDEntry, RxnEntries
-from rxn_network.helpers import (
+from rxn_network.old_helpers import (
     BalancedPathway,
     RxnPathway,
     expand_pd,
     find_interdependent_rxns,
     find_rxn_edges,
-    generate_all_combos,
+    powerset,
     get_rxn_cost,
     grouper,
     react_interface,
@@ -75,7 +75,7 @@ class ReactionNetwork:
                 pymatgen. Entries should have same compatability (e.g.
                 MPCompability) for phase diagram generation.
             n (int): maximum number of phases allowed on each side of the
-                reaction (default 2). Note that n > 2 leads to significant (
+                reaction (default 2). Note that dim > 2 leads to significant (
                 and often intractable) combinatorial explosion.
             temp (int): Temperature (in Kelvin) used for estimating Gibbs
                 free energy of formation, as well as scaling the cost function
@@ -127,7 +127,7 @@ class ReactionNetwork:
             self._pd = PhaseDiagram(self._filtered_entries)
         elif len(self._elements) > 10 and include_chempot_restriction:
             raise ValueError(
-                "Cannot include chempot restriction for networks with greater than 10 elements!"
+                "Cannot include mu restriction for networks with greater than 10 elements!"
             )
 
         if interpolate_comps:
@@ -169,9 +169,7 @@ class ReactionNetwork:
 
         self._all_entry_combos = [
             set(combo)
-            for combo in generate_all_combos(
-                self._filtered_entries, self._max_num_phases
-            )
+            for combo in powerset(self._filtered_entries, self._max_num_phases)
         ]
 
         self.entry_set = EntrySet(self._filtered_entries)
@@ -214,9 +212,9 @@ class ReactionNetwork:
             edge_list.append([v, target_v, 0, None, True, False])
 
         if complex_loopback:
-            combos = generate_all_combos(phases.union(precursors), max_num_phases)
+            combos = powerset(phases.union(precursors), max_num_phases)
         else:
-            combos = generate_all_combos(phases, max_num_phases)
+            combos = powerset(phases, max_num_phases)
 
         if complex_loopback:
             for c in combos:
@@ -478,7 +476,7 @@ class ReactionNetwork:
 
     def find_intermediate_rxns(self, intermediates, targets, chempots=None):
         all_rxns = set()
-        combos = list(generate_all_combos(intermediates, 2))
+        combos = list(powerset(intermediates, 2))
         for entries in tqdm(combos):
             n = len(entries)
             r1 = entries[0].composition.reduced_composition
@@ -700,8 +698,8 @@ class ReactionNetwork:
 
     def find_crossover_rxns(self, intermediates, targets):
         all_crossover_rxns = dict()
-        for reactants_combo in generate_all_combos(intermediates, self._max_num_phases):
-            for products_combo in generate_all_combos(targets, self._max_num_phases):
+        for reactants_combo in powerset(intermediates, self._max_num_phases):
+            for products_combo in powerset(targets, self._max_num_phases):
                 try:
                     rxn = ComputedReaction(
                         list(reactants_combo),
@@ -776,11 +774,9 @@ class ReactionNetwork:
             phases = g.vp["entries"][v].entries
 
             if complex_loopback:
-                combos = generate_all_combos(
-                    phases.union(self._precursors), self._max_num_phases
-                )
+                combos = powerset(phases.union(self._precursors), self._max_num_phases)
             else:
-                combos = generate_all_combos(phases, self._max_num_phases)
+                combos = powerset(phases, self._max_num_phases)
 
             for c in combos:
                 combo_phases = set(c)

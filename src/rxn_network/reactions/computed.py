@@ -1,8 +1,10 @@
 " A ComputedReaction class to generate from ComputedEntry objects "
-from typing import List
+from typing import List, Dict, Optional
 
 import numpy as np
+from pymatgen.core.composition import Element
 from pymatgen.entries import Entry
+from pymatgen.analysis.phase_diagram import PDEntry, GrandPotPDEntry
 from uncertainties import ufloat
 
 from rxn_network.reactions.basic import BasicReaction
@@ -12,40 +14,33 @@ class ComputedReaction(BasicReaction):
     """
     Convenience class to generate a reaction from ComputedEntry objects, with
     some additional attributes, such as a reaction energy based on computed
-    energies. Will balance the reaction
+    energies. Will balance the reaction.
     """
 
     def __init__(
         self,
-        reactant_entries: List[Entry],
-        product_entries: List[Entry],
-        coefficients: np.array,
+        entries: List[Entry],
+        coefficients: List[float],
+        data: Optional[Dict] = None,
+        lowest_num_errors: Optional[int] = None,
     ):
         """
         Args:
-            reactant_entries ([ComputedEntry]): List of reactant_entries.
-            product_entries ([ComputedEntry]): List of product_entries.
+            entries([ComputedEntry]): List of ComputedEntry objects.
+            coefficients([float]): List of reaction coefficients.
         """
-        self.reactant_entries = reactant_entries
-        self.product_entries = product_entries
-        self.coefficients = coefficients
+        self._entries = list(entries)
+        self.reactant_entries = [
+            entry for entry, coeff in zip(entries, coefficients) if coeff < 0
+        ]
+        self.product_entries = [
+            entry for entry, coeff in zip(entries, coefficients) if coeff > 0
+        ]
+        compositions = [e.composition.reduced_composition for e in entries]
 
-        all_entries = reactant_entries + product_entries
-
-        # Matt: why do you reduce the composition here? Does it affect the balancing?
-        reactant_coeffs = {
-            e.composition.reduced_composition()
-            for e, c in zip(all_entries, coefficients)
-            if c < 0
-        }
-
-        product_coeffs = {
-            e.composition.reduced_composition()
-            for e, c in zip(all_entries, coefficients)
-            if c > 0
-        }
-
-        super().__init__(reactant_coeffs, product_coeffs)
+        super().__init__(
+            compositions, coefficients, data=data, lowest_num_errors=lowest_num_errors
+        )
 
     @property
     def entries(self):
@@ -53,9 +48,8 @@ class ComputedReaction(BasicReaction):
         Equivalent of all_comp but returns entries, in the same order as the
         coefficients.
 
-        #Matt: do you needed it ordered by coefficients? all_comp was not ordered as such
         """
-        return self.reactant_entries + self.product_entries
+        return self._entries
 
     @property
     def energy(self) -> float:
@@ -65,7 +59,7 @@ class ComputedReaction(BasicReaction):
         """
         calc_energies = {}
 
-        for entry in self.reactant_entries + self.product_entries:
+        for entry in self._entries:
             (comp, factor) = entry.composition.get_reduced_composition_and_factor()
             calc_energies[comp] = min(
                 calc_energies.get(comp, float("inf")), entry.energy / factor
@@ -79,6 +73,15 @@ class ComputedReaction(BasicReaction):
         )
 
     @property
+    def energy_per_atom(self) -> float:
+        """
+        Returns (float):
+            The calculated reaction energy in eV, divided by the total number of
+            atoms in the reaction.
+        """
+        return self.energy / self.num_atoms
+
+    @property
     def energy_uncertainty(self):
         """
         Calculates the uncertainty in the reaction energy based on the uncertainty in the
@@ -87,7 +90,7 @@ class ComputedReaction(BasicReaction):
 
         calc_energies = {}
 
-        for entry in self.reactant_entries + self.product_entries:
+        for entry in self._entries:
             (comp, factor) = entry.composition.get_reduced_composition_and_factor()
             energy_ufloat = ufloat(entry.energy, entry.correction_uncertainty)
             calc_energies[comp] = min(
@@ -101,12 +104,27 @@ class ComputedReaction(BasicReaction):
             ]
         )
 
+    def copy(self) -> "ComputedReaction":
+        """
+        Returns a copy of the Reaction object.
+        """
+        return ComputedReaction(
+            self.entries, self.coefficients, self.data, self.lowest_num_errors
+        )
+
+    @property
+    def energy_uncertainty_per_atom(self):
+        return self.energy_uncertainty / self.num_atoms
+
     @classmethod
     def balance(
-        cls, reactant_entries: List[Entry], product_entries: List[Entry]
+        cls,
+        reactant_entries: List[Entry],
+        product_entries: List[Entry],
+        data: Optional[Dict] = None,
     ):  # pylint: disable = W0221
         """
-        Balances and returns a new ComputedReaction
+        Balances and returns a new ComputedReaction.
 
         Reactants and products to be specified as list of
         pymatgen.core.structure.Composition.  e.g., [comp1, comp2]
@@ -115,14 +133,17 @@ class ComputedReaction(BasicReaction):
             reactants ([Composition]): List of reactants.
             products ([Composition]): List of products.
         """
-
-        reactant_comps = {e.composition.reduced_composition() for e in reactant_entries}
-
-        product_comps = {e.composition.reduced_composition() for e in product_entries}
-        coefficients = cls._balance_coeffs(reactant_comps, product_comps)
+        reactant_comps = [e.composition.reduced_composition for e in reactant_entries]
+        product_comps = [e.composition.reduced_composition for e in product_entries]
+        coefficients, lowest_num_errors = cls._balance_coeffs(
+            reactant_comps, product_comps
+        )
+        if not coefficients.any():
+            coefficients = []
 
         return cls(
-            reactant_entries=reactant_entries,
-            product_entries=product_entries,
+            entries=list(reactant_entries) + list(product_entries),
             coefficients=coefficients,
+            data=data,
+            lowest_num_errors=lowest_num_errors,
         )
